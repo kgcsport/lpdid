@@ -614,7 +614,7 @@ lpdid_dt_prep <- function(df, window = c(NA, NA), y,
   }
   else {
   dfs <- lapply(-pre_window:post_window, function(j) {
-    df_sub=df
+    df_sub=copy(df)
     if (j==omitted) return(NULL)
     # Post
     else if(between(j,0,post_window)){
@@ -655,23 +655,23 @@ lpdid_dt_prep <- function(df, window = c(NA, NA), y,
         # The first just says only j between -pre_window and -1
         # The second says only j between -pre_window and 0 when it is pmd...
     else if((between(j,-pre_window,-1)) || (pmd & between(j,-pre_window,0))){
-        # print(paste('pre:',j))
-      df_sub[,Dy:= shift(y, j, type='lag') - the_lag, by=unit_index, env=env_list]
+        # here the negative number lead looks back
+      df_sub[,Dy:= shift(y, j, type='lead') - the_lag, by=unit_index, env=env_list]
 
-      if(!is.na(controls_t[1])) df_sub[,paste0(controls_t, ".l") := shift(.SD, j,type='lag'), .SDcols = controls_t, by=unit_index, env=env_list]
+      if(!is.na(controls_t[1])) df_sub[,paste0(controls_t, ".l") := shift(.SD, j,type='lead'), .SDcols = controls_t, by=unit_index, env=env_list]
 
       if(!nonabsorbing){
 
         lim <- !is.na(df_sub[,Dy]) & !is.na(df_sub[,treat_diff]) & !is.na(df_sub[,treat]) & (df_sub[,treat_diff] == 1 | df_sub[,treat] == 0)
-        if(composition_correction) lim <- !is.na(df_sub[,Dy]) & !is.na(df_sub[,treat_diff]) & !is.na(df_sub[,treat]) & (df_sub[,treat_diff] == 1 | lead(df_sub[,treat], post_window) == 0) & (is.na(df_sub[,treat_date]) | (df_sub[,treat_date] < max(df_sub[,time_index]) - post_window))
+        if(composition_correction) lim <- !is.na(df_sub[,Dy]) & !is.na(df_sub[,treat_diff]) & !is.na(df_sub[,treat]) & (df_sub[,treat_diff] == 1 | shift(df_sub[,treat], post_window, type='lead') == 0) & (is.na(df_sub[,treat_date]) | (df_sub[,treat_date] < max(df_sub[,time_index]) - post_window))
       } else {
 
         ## Non-Absorbing Limit
         lim_ctrl <- TRUE; lim_treat <- TRUE
-        for(i in -nonabsorbing_lag:j){
+        for(k in -nonabsorbing_lag:j){
 
-          lim_ctrl <- lim_ctrl & shift(df_sub[,treat_diff],-i) == 0
-          lim_treat <- lim_treat & if(i >= 0) shift(df_sub[,treat],i,type='lead') == 1 else shift(df_sub[,treat],-i) == 0
+          lim_ctrl <- lim_ctrl & shift(df_sub[,treat_diff],-k,type='lag') == 0
+          lim_treat <- lim_treat & if(k >= 0) shift(df_sub[,treat],k,type='lead') == 1 else shift(df_sub[,treat],-k,type='lag') == 0
         }        
         lim <- lim_ctrl | lim_treat
       }
@@ -682,7 +682,6 @@ lpdid_dt_prep <- function(df, window = c(NA, NA), y,
     
     df_sub[,laglead:=j]
     df_sub[,lim:=lim]
-    print(df_sub)
     return(df_sub)
     }
   )
