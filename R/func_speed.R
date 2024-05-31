@@ -555,11 +555,12 @@ lpdid_dt_prep <- function(df, window = c(NA, NA), y,
                   composition_correction = FALSE,
                   pooled = FALSE,
                   nonabsorbing_lag = NULL,
-                  omitted=-1){
+                  omitted=-1,
+                  j='j'){
 
   if(is.null(cluster)) cluster <- unit_index
 
-  env_list = list(y = y, unit_index = unit_index, time_index = time_index, treat_status = treat_status, cluster = cluster, controls = controls, controls_t = controls_t, outcome_lags = outcome_lags, reweight = reweight, pmd = pmd, pmd_lag = pmd_lag, composition_correction = composition_correction, pooled = pooled, nonabsorbing_lag = nonabsorbing_lag)
+  env_list = list(y = y, unit_index = unit_index, time_index = time_index, treat_status = treat_status, cluster = cluster, controls = controls, controls_t = controls_t, outcome_lags = outcome_lags, reweight = reweight, pmd = pmd, pmd_lag = pmd_lag, composition_correction = composition_correction, pooled = pooled, nonabsorbing_lag = nonabsorbing_lag,j=j)
 
   pre_window <- -1*window[1]; post_window <- window[2]
 
@@ -607,86 +608,90 @@ lpdid_dt_prep <- function(df, window = c(NA, NA), y,
   df[,cluster_var:=cluster,env=env_list]
   
   if(!reweight) df[, c('reweight_0', 'reweight_use') := 1]
-  
+  # Create lag leads
   if(pooled) {
     df[, y := shift(frollmean(y, n=post_window,algo='exact'),1), by=i, env=list(y='y',i='i')]
     return(df)
   }
   else {
-  dfs <- lapply(-pre_window:post_window, function(j) {
-    df_sub=df
-    if (j==omitted) return(NULL)
-    # Post
-    else if(between(j,0,post_window)){
-    # print(paste('post:',j))
-    df_sub[,Dy:= shift(y, j, type='lead') - the_lag, by=unit_index, env=env_list]
+  df <- rbindlist(lapply(-pre_window:post_window, function(k) {
+    if (k==omitted & pmd==FALSE) return(NULL) # skip omitted unless using multiple pre-period means
+    else {
+        df_sub = copy(df)
+        df_sub[,j:=k,env=env_list]
+    }
+  }
+  ))
+  # delta y
+  print(df)
+    df[j>=0,Dy:= shift(y, j, type='lead') - the_lag, 
+        by=list(unit_index,j), 
+        env=env_list]
+    df[j < 0,Dy:= shift(y, -j, type='lag') - the_lag, 
+        by=list(unit_index,j), 
+        env=env_list]
+  
+    if(!is.na(controls_t[1])) df[,paste0(controls_t, ".l") := shift(.SD, j,type='lead'), .SDcols = controls_t, by=list(unit_index,j), env=env_list]
     
-    if(!is.na(controls_t[1])) df_sub[,paste0(controls_t, ".l") := shift(.SD, j,type='lead'), .SDcols = controls_t, by=unit_index, env=env_list]
-    
-      # Create "Limit"
-      if(!nonabsorbing){
+return(df)
+
+    #   # Create "Limit"
+    #   if(!nonabsorbing){
         
-        lim <- !is.na(df_sub[,Dy]) & !is.na(df_sub[,treat_diff]) & !is.na(shift(df_sub[,treat],j,type='lead')) & (df_sub[,treat_diff] == 1 | shift(df_sub[,treat],j,type='lead') == 0)
-        if(composition_correction) lim <- !is.na(df_subf[,Dy]) & !is.na(df_sub[,treat_diff]) & !is.na(shift(df_sub[,treat],j,type='lead')) & (df_sub[,treat_diff] == 1 | shift(df_sub[,treat],post_window,type='lead') == 0) & (is.na(df_sub[,treat_date]) | (df_sub[,treat_date] < max(df_sub[,time_index]) - post_window))
-      } else {
+    #     lim <- !is.na(df_sub[,Dy]) & !is.na(df_sub[,treat_diff]) & !is.na(shift(df_sub[,treat],j,type='lead')) & (df_sub[,treat_diff] == 1 | shift(df_sub[,treat],j,type='lead') == 0)
+    #     if(composition_correction) lim <- !is.na(df_subf[,Dy]) & !is.na(df_sub[,treat_diff]) & !is.na(shift(df_sub[,treat],j,type='lead')) & (df_sub[,treat_diff] == 1 | shift(df_sub[,treat],post_window,type='lead') == 0) & (is.na(df_sub[,treat_date]) | (df_sub[,treat_date] < max(df_sub[,time_index]) - post_window))
+    #   } else {
 
-        ## Non-Absorbing Limit
-        lim_ctrl <- TRUE; lim_treat <- TRUE
-        for(i in -nonabsorbing_lag:j){
+    #     ## Non-Absorbing Limit
+    #     lim_ctrl <- TRUE; lim_treat <- TRUE
+    #     for(i in -nonabsorbing_lag:j){
 
-          lim_ctrl <- lim_ctrl & shift(df_sub[,treat_diff],-i) == 0
-          lim_treat <- lim_treat & if(i >= 0) shift(df_sub[,treat],i,type='lead') == 1 else shift(df_sub[,treat],-i) == 0
-        }
-        df_sub[,lim_c := ifelse(lim_ctrl, 1, 0)]
-        df_sub[,lim_t := ifelse(lim_treat, 1, 0)]
-        lim <- lim_ctrl | lim_treat # & df_sub$reweight_use > 0
-      }
-      lim <- !is.na(lim) & lim
+    #       lim_ctrl <- lim_ctrl & shift(df_sub[,treat_diff],-i) == 0
+    #       lim_treat <- lim_treat & if(i >= 0) shift(df_sub[,treat],i,type='lead') == 1 else shift(df_sub[,treat],-i) == 0
+    #     }
+    #     df_sub[,lim_c := ifelse(lim_ctrl, 1, 0)]
+    #     df_sub[,lim_t := ifelse(lim_treat, 1, 0)]
+    #     lim <- lim_ctrl | lim_treat # & df_sub$reweight_use > 0
+    #   }
+    #   lim <- !is.na(lim) & lim
 
-      # Calculate weights for j
-      if(reweight){
-        df_sub[ , reweight_use := get_weights(df = df_sub, j = j, time_index = time_index, lim = lim), env=env_list]
-        if(j == 0) df_sub[, reweight_0:= reweight_use] 
-      }
-    }
+    #   # Calculate weights for j
+    #   if(reweight){
+    #     df_sub[ , reweight_use := get_weights(df = df_sub, j = j, time_index = time_index, lim = lim), env=env_list]
+    #     if(j == 0) df_sub[, reweight_0:= reweight_use] 
+    #   }
+    # }
 
-    # Pre (Not sure about pmd here...)
-    # Before it was: if((j>1 & j<=pre_window) || (pmd & j<=pre_window)){
-        # The first just says only j between -pre_window and -1
-        # The second says only j between -pre_window and 0 when it is pmd...
-    else if((between(j,-pre_window,-1)) || (pmd & between(j,-pre_window,0))){
-        # print(paste('pre:',j))
-      df_sub[,Dy:= shift(y, j, type='lag') - the_lag, by=unit_index, env=env_list]
+    # # Pre (Not sure about pmd here...)
+    # # Before it was: if((j>1 & j<=pre_window) || (pmd & j<=pre_window)){
+    #     # The first just says only j between -pre_window and -1
+    #     # The second says only j between -pre_window and 0 when it is pmd...
+    # else if((between(j,-pre_window,-1)) || (pmd & between(j,-pre_window,0))){
+    #     # print(paste('pre:',j))
+    #   df_sub[,Dy:= shift(y, j, type='lag') - the_lag, by=unit_index, env=env_list]
 
-      if(!is.na(controls_t[1])) df_sub[,paste0(controls_t, ".l") := shift(.SD, j,type='lag'), .SDcols = controls_t, by=unit_index, env=env_list]
+    #   if(!is.na(controls_t[1])) df_sub[,paste0(controls_t, ".l") := shift(.SD, j,type='lag'), .SDcols = controls_t, by=unit_index, env=env_list]
 
-      if(!nonabsorbing){
+    #   if(!nonabsorbing){
 
-        lim <- !is.na(df_sub[,Dy]) & !is.na(df_sub[,treat_diff]) & !is.na(df_sub[,treat]) & (df_sub[,treat_diff] == 1 | df_sub[,treat] == 0)
-        if(composition_correction) lim <- !is.na(df_sub[,Dy]) & !is.na(df_sub[,treat_diff]) & !is.na(df_sub[,treat]) & (df_sub[,treat_diff] == 1 | lead(df_sub[,treat], post_window) == 0) & (is.na(df_sub[,treat_date]) | (df_sub[,treat_date] < max(df_sub[,time_index]) - post_window))
-      } else {
+    #     lim <- !is.na(df_sub[,Dy]) & !is.na(df_sub[,treat_diff]) & !is.na(df_sub[,treat]) & (df_sub[,treat_diff] == 1 | df_sub[,treat] == 0)
+    #     if(composition_correction) lim <- !is.na(df_sub[,Dy]) & !is.na(df_sub[,treat_diff]) & !is.na(df_sub[,treat]) & (df_sub[,treat_diff] == 1 | lead(df_sub[,treat], post_window) == 0) & (is.na(df_sub[,treat_date]) | (df_sub[,treat_date] < max(df_sub[,time_index]) - post_window))
+    #   } else {
 
-        ## Non-Absorbing Limit
-        lim_ctrl <- TRUE; lim_treat <- TRUE
-        for(i in -nonabsorbing_lag:j){
+    #     ## Non-Absorbing Limit
+    #     lim_ctrl <- TRUE; lim_treat <- TRUE
+    #     for(i in -nonabsorbing_lag:j){
 
-          lim_ctrl <- lim_ctrl & shift(df_sub[,treat_diff],-i) == 0
-          lim_treat <- lim_treat & if(i >= 0) shift(df_sub[,treat],i,type='lead') == 1 else shift(df_sub[,treat],-i) == 0
-        }        
-        lim <- lim_ctrl | lim_treat
-      }
-    }
+    #       lim_ctrl <- lim_ctrl & shift(df_sub[,treat_diff],-i) == 0
+    #       lim_treat <- lim_treat & if(i >= 0) shift(df_sub[,treat],i,type='lead') == 1 else shift(df_sub[,treat],-i) == 0
+    #     }        
+    #     lim <- lim_ctrl | lim_treat
+    #   }
+    # }
     
-    # This is now broken -- it overwrites across the different j's so it only saves the output for j=10. It did not do this when I first wrote it, so I'm not sure what changed. I probably breathed funny because data.table is a jerk.
-    lim <- lim & df_sub[,reweight_use] > 0
+    # # This is now broken -- it overwrites across the different j's so it only saves the output for j=10. It did not do this when I first wrote it, so I'm not sure what changed. I probably breathed funny because data.table is a jerk.
+    # lim <- lim & df_sub[,reweight_use] > 0
     
-    df_sub[,laglead:=j]
-    df_sub[,lim:=lim]
-    print(df_sub)
-    return(df_sub)
-    }
-  )
-  return(rbindlist(dfs))
     }
 }
 
