@@ -685,11 +685,11 @@ lpdid_dt_prep <- function(df, window = c(NA, NA), y,
     return(df_sub)
     }
   )
-  return(rbindlist(dfs))
+  return(rbindlist(dfs,fill=TRUE))
     }
 }
 
-lpdid_dt <- function(df, window = c(NA, NA), y,
+lpdid_dt <- function(df, window = c(NA, NA), 
                   unit_index, time_index,
                   treat_status = "",
                   cluster = NULL,
@@ -702,38 +702,49 @@ lpdid_dt <- function(df, window = c(NA, NA), y,
                   pooled = FALSE,
                   nonabsorbing_lag = NULL){
 
-  lpdid_betaz <- rep(0, length(-pre_window:post_window))
-  lpdid_sez <- rep(0, length(-pre_window:post_window))
-  lpdid_nz <- rep(0, length(-pre_window:post_window))
+  lagz <- colnames(df)[grepl("y_diff_lag.", colnames(df))]
+  if (length(lagz) == 0) lagz <- NULL
+    
 
-  if(pooled) loop_bound <- 0 else loop_bound <- max(post_window, pre_window)
-  # j<-2
-  # KGC: This should be doable with a lapply of some sort, which I can parallelize. Not doable without that though cause observations should have multiple regressions done on them, right? Worth checking that out though. 
-  # Way to check that out, save a df for each j and check observations involved. 
+  if (is.null(cluster)) cluster <- unit_index
+  # ## Insert Controls here...
+  # controls <- ~ a + b | DV3
+  # ## Insert Time-Varying Controls here...
+  # controls_t <- ~ x + y + z
+  # controls_t <- ~ x + y + z | FE1 + FE2
+  
+  controls <- as.character(controls)[2]
+  controls_t <- as.character(controls_t)[2]
 
-  lapply(0:loop_bound, function(j) {
+  FE <- NULL
+  if(length(controls) == 2){
 
-    # Calculate Pooled
-    if(pooled & j == 0) df[, y := shift(frollmean(y, n=post_window,algo='exact'),1), by=i, env=list(y='y',i='i')]
-      
-    if(!reweight) df[, c('reweight_0', 'reweight_use') := 1]
+    FE <- controls[2]
+    controls <- controls[1]
+  }
 
-    # Post
-    if(j <= post_window){
+    
+  controls_t <- strsplit(controls_t, "\\s*\\|\\s*")[[1]]
+  if(length(controls_t) == 2){
 
-      df$Dy <- lead(df[,y], j) - df$the_lag
-      df[,Dy:= shift(y, j, type='lead') - the_lag]
+    if(is.null(FE)) FE <- controls_t[2] else FE <- c(FE, controls_t[2])
+    controls_t <- controls_t[1]
+  }
 
-      # # Create Formula
-      # if(!is.null(controls)) controls <- paste0(" + ", paste(controls, collapse = " + "))
-      # frmla <- as.formula(paste0("Dy ~ treat_diff", controls, " | ", time_index))
+  controls <- strsplit(controls, "\\s*\\+\\s*")[[1]]
+  controls_t <- strsplit(controls_t, "\\s*\\+\\s*")[[1]]
+
+    # # Create Formula
+    # if(!is.null(controls)) controls <- paste0(" + ", paste(controls, collapse = " + "))
+    # frmla <- as.formula(paste0("Dy ~ treat_diff", controls, " | ", time_index))
 
       frmla <- "Dy ~ treat_diff"
+      
       if(!is.null(lagz[1])) lagz <- paste(lagz, collapse = " + ")
       if(!is.null(lagz[1])) frmla <- paste0(frmla, " + ", lagz)
       if(!is.na(controls[1])) controls_use <- paste(controls, collapse = " + ")
       if(!is.na(controls[1])) frmla <- paste(frmla, "+", paste(controls, collapse = " + "))
-
+    
       if(!is.na(controls_t[1])){
 
         for(ctrl in controls_t){
@@ -750,116 +761,50 @@ lpdid_dt <- function(df, window = c(NA, NA), y,
       } else {
         rhs <- time_index
       }
+       
       frmla <- as.formula(paste0(frmla, " | ", rhs))
 
-      # Create "Limit"
-      if(!nonabsorbing){
-        # KGC: Specifically, I need to check the lims across each j. When does it change?
-        lim <- !is.na(df[,"Dy"]) & !is.na(df$treat_diff) & !is.na(lead(df$treat, j)) & (df$treat_diff == 1 | lead(df$treat, j) == 0)
-        if(composition_correction) lim <- !is.na(df[,"Dy"]) & !is.na(df$treat_diff) & !is.na(lead(df$treat, j)) & (df$treat_diff == 1 | lead(df$treat, post_window) == 0) & (is.na(df$treat_date) | (df$treat_date < max(df[,time_index]) - post_window))
-      } else {
+      tmp <- suppressMessages(feols(frmla, data = df[(lim),], cluster = ~cluster_var, weights = ~reweight_use, fsplit=~laglead))
+    return(tmp)
+      lpdid_betaz <- sapply(tmp, function(x) x$coeftable[1,1])
+      lpdid_sez   <- sapply(tmp, function(x) x$coeftable[1,2])
+      lpdid_nz    <- sapply(tmp, function(x) nobs(x))
+      # extract the names of the list
+      coeftable <- data.frame(t   = as.numeric(extract_number(names(lpdid_betaz))),
+                              Estimate = lpdid_betaz,
+                              "Std. Error" = lpdid_sez,
+                              "t value" = lpdid_betaz/lpdid_sez,
+                              "Pr(>|t|)" = NA,
+                              nobs       = lpdid_nz,
+                              check.names=FALSE,row.names=NULL)
+      
+    # add row for omitted all zero
+    coeftable <- rbind(coeftable, 
+        data.frame(t=omitted, Estimate=0, "Std. Error"=0, "t value"=NA, "Pr(>|t|)"=NA, nobs=NA,check.names=FALSE,row.names=NULL))
+    coeftable <- coeftable[order(coeftable$t),]
+    coeftable[,"Pr(>|t|)"] <- pnorm(abs(coeftable$`t value`), lower.tail = F)
+    
+    return(list('coefs'=coeftable, 'df'=df))
 
-        ## Non-Absorbing Limit
-        lim_ctrl <- TRUE; lim_treat <- TRUE
-        for(i in -nonabsorbing_lag:j){
+}
 
-          lim_ctrl <- lim_ctrl & lag(df$treat_diff, -i) == 0
-          lim_treat <- lim_treat & if(i >= 0) lead(df$treat, i) == 1 else lag(df$treat, -i) == 0
-        }
-        df$lim_c <- ifelse(lim_ctrl, 1, 0)
-        df$lim_t <- ifelse(lim_treat, 1, 0)
-        lim <- lim_ctrl | lim_treat# & df$reweight_use > 0
-      }
-      lim <- !is.na(lim) & lim
-
-      # Calculate weights for j
-      if(reweight){
-
-        df$reweight_use <- get_weights(df = df, j = j, time_index = time_index, lim = lim)
-        if(j == 0) df$reweight_0 <- df$reweight_use
-      }
-
-      lim <- lim & df$reweight_use > 0
-
-      # Check for perfect multi-colinearity
-      if(sum(lim) > 0 && sum(!aggregate(df$treat_diff[lim], list(df[lim, time_index]), mean)$x %in% c(0, 1))){
-
-        # Estimate and Save
-        tmp <- suppressMessages(feols(frmla, data = df[lim,], cluster = ~cluster_var, weights = ~reweight_use))
-        lpdid_betaz[match(j, -pre_window:post_window)] <- tmp$coeftable[1,1]
-        lpdid_sez[match(j, -pre_window:post_window)] <- tmp$coeftable[1,2]
-        lpdid_nz[match(j, -pre_window:post_window)] <- nobs(tmp)
-      } else {
-
-        lpdid_betaz[match(j, -pre_window:post_window)] <- NA
-        lpdid_sez[match(j, -pre_window:post_window)] <- NA
-        lpdid_nz[match(j, -pre_window:post_window)] <- NA
-      }
-    }
-
-    # Pre
-    if((j>1 & j<=pre_window) || (pmd & j<=pre_window)){
-
-      df$Dy <- lag(df[,y], j) - df$the_lag
-
-      # if(!is.null(controls)) controls <- paste0(" + ", paste(controls, collapse = " + "))
-      # frmla <- as.formula(paste0("Dy ~ treat_diff", controls, " | ", time_index))
-
-      frmla <- "Dy ~ treat_diff"
-      if(!is.null(lagz[1])) lagz <- paste(lagz, collapse = " + ")
-      if(!is.null(lagz[1])) frmla <- paste0(frmla, " + ", lagz)
-      if(!is.na(controls[1])) controls_use <- paste(controls, collapse = " + ")
-      if(!is.na(controls[1])) frmla <- paste(frmla, "+", paste(controls, collapse = " + "))
-
-      if(!is.na(controls_t[1])){
-
-        for(ctrl in controls_t){
-
-          df[,paste0(ctrl, ".l")] <- lag(df[,ctrl], j)
-        }
-
-        controls_t_use <- paste0(controls_t, ".l")
-        frmla <- paste0(frmla, " + ", paste(controls_t_use, collapse = " + "))
-      }
-
-      if(!is.null(FE)){
-        rhs <- paste(time_index, " + ", paste(unlist(strsplit(FE, "\\s*\\+\\s*")), collapse = " + "))
-      } else {
-        rhs <- time_index
-      }
-      frmla <- as.formula(paste0(frmla, " | ", rhs))
-
-      if(!nonabsorbing){
-
-        lim <- !is.na(df[,"Dy"]) & !is.na(df$treat_diff) & !is.na(df$treat) & (df$treat_diff == 1 | df$treat == 0)
-        if(composition_correction) lim <- !is.na(df[,"Dy"]) & !is.na(df$treat_diff) & !is.na(df$treat) & (df$treat_diff == 1 | lead(df$treat, post_window) == 0) & (is.na(df$treat_date) | (df$treat_date < max(df[,time_index]) - post_window))
-      } else {
-
-        ## Non-Absorbing Limit
-        lim_ctrl <- TRUE; lim_treat <- TRUE
-        for(i in -nonabsorbing_lag:j){
-
-          lim_ctrl <- lim_ctrl & lag(df$treat_diff, -i) == 0
-          lim_treat <- lim_treat & if(i >= 0) lead(df$treat, i) == 1 else lag(df$treat, -i) == 0
-        }
-        lim <- lim_ctrl | lim_treat
-      }
-
-      lim <- !is.na(lim) & lim & df$reweight_0 > 0
-
-      if(sum(lim) > 0 && sum(!aggregate(df$treat_diff[lim], list(df[lim, time_index]), mean)$x %in% c(0, 1))){
-
-        suppressMessages(tmp <- feols(frmla, data = df[lim,], cluster = ~cluster_var, weights = ~reweight_0))
-        lpdid_betaz[match(-j, -pre_window:post_window)] <- tmp$coeftable[1,1]
-        lpdid_sez[match(-j, -pre_window:post_window)] <- tmp$coeftable[1,2]
-        lpdid_nz[match(-j, -pre_window:post_window)] <- nobs(tmp)
-      } else {
-
-        lpdid_betaz[match(-j, -pre_window:post_window)] <- NA
-        lpdid_sez[match(-j, -pre_window:post_window)] <- NA
-        lpdid_nz[match(-j, -pre_window:post_window)] <- NA
-      }
-    }
-  }
-  )
+extract_number <- function(input_string,pattern="sample: (-?\\d+)") {
+# Example usage
+# input_string <- "sample.var: laglead; sample: -5"
+# result <- extract_number(input_string)
+# print(result)
+  
+  # Use gregexpr to find matches
+  matches <- gregexpr(pattern, input_string)
+  
+  # Use regmatches to extract the matched substrings
+  extracted <- regmatches(input_string, matches)
+  
+  # Since regmatches returns a list, unlist and extract the captured group
+  extracted_value <- sub("sample: ", "", unlist(extracted))
+  
+  # Convert to numeric
+  numeric_value <- as.numeric(extracted_value)
+  
+  return(numeric_value)
 }
