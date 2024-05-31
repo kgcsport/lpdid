@@ -9,7 +9,7 @@
 #' @param pmd_lag The number of pre-periods that should be used when calculating the pre-treatment mean.
 #' @return The reference value in the analysis.
 #' @noRd
-pmd_func <- function(df, y, pmd_lag){
+pmd_func_speed <- function(df, y, pmd_lag){
 
   # This function averages y-values from t-1 to t-pmd_lag
   the_lag <- 0
@@ -26,10 +26,11 @@ pmd_func <- function(df, y, pmd_lag){
 #' @param pool_lead The number of post-periods that should be used when calculating the post-treatment mean.
 #' @return The average of all future values in the analysis.
 #' @noRd
-pooled_adjustment <- function(df, y, pool_lead){
+pooled_adjustment_speed <- function(df, y, pool_lead){
 
   the_lead <- 0
   for(k in 0:pool_lead) the_lead <- the_lead + lead(df[,y], k)
+  cumsum(df[,y], k)
   the_lead <- the_lead / (pool_lead+1)
   return(the_lead)
 }
@@ -42,7 +43,7 @@ pooled_adjustment <- function(df, y, pool_lead){
 #' @param time_index The variable indicating calendar time.
 #' @return Regression weights for the post-treatment horizon periods.
 #' @noRd
-get_weights <- function(df, j, time_index, lim){
+get_weights_speed <- function(df, j, time_index, lim){
 
   df[,paste0("group_h", j)] <- NA
   df[,paste0("group_h", j)] <- ifelse(lim, df[,time_index], df[,paste0("group_h", j)])
@@ -205,6 +206,26 @@ genr_sim_data <- function(exogenous_timing = TRUE, seed = 757){
   df$beta <- beta
   return(df)
 }
+# This just gets used to create treat... couldn't it be cut and just use treat status?
+make_rel_time <- function(rel_time, df, unit_index, time_index, treat_status) {
+    
+  # KGC: This is only necessary for the non-absorbing treatments, so when treat_status switches on and off...
+  rel_time <- "rel_time"
+  df[,rel_time] <- NA
+  # KGC: Also seems like this could be done with lapply, parallelized, or done with data.table and some elbow grease. 
+  
+  rbindlist(
+    lapply(split(df, df[,unit_index]), function(x) {
+        valz <- x[x[,treat_status] == 1, time_index]
+        if(length(valz) > 0) {
+        mat <- outer(x[,time_index], valz, "-")
+        x[,rel_time] <- apply(mat, 1, function(x) x[which.min(abs(x))])
+        } else {
+        x[,rel_time] <- -1000
+        }
+        return(x)
+  }))
+}
 
 #' Local Projections Difference-in-Differences
 #'
@@ -232,7 +253,7 @@ genr_sim_data <- function(exogenous_timing = TRUE, seed = 757){
 
 #' @return A list including a coefficient table and window vector.
 #' @export
-lpdid <- function(df, window = c(NA, NA), y,
+lpdid_speed_prep <- function(df, window = c(NA, NA), y,
                   unit_index, time_index,
                   treat_status = "",
                   cluster = NULL,
@@ -262,7 +283,7 @@ lpdid <- function(df, window = c(NA, NA), y,
 
   # Convert df to pdata.frame
   if(!inherits(df, "pdata.frame")) df <- pdata.frame(df, index=c(unit_index,time_index), drop.index=FALSE, row.names=FALSE)
-  df[,unit_index] <- as.character(df[,unit_index]); df[,time_index] <- as.numeric(df[,time_index])
+  df[,time_index] <- as.numeric(df[,time_index])
 
   # Calculate Pre-Mean Differences
   if(pmd){
@@ -277,33 +298,13 @@ lpdid <- function(df, window = c(NA, NA), y,
   if(is.null(nonabsorbing_lag)) nonabsorbing_lag <- Inf else nonabsorbing <- T
 
   # create "rel_time" variable for nonabsorbing
-
-  # KGC: This is only necessary for the non-absorbing treatments, so when treat_status switches on and off...
-  rel_time <- "rel_time"
-  df[,rel_time] <- NA
-  # KGC: Also seems like this could be done with lapply, parallelized, or done with data.table and some elbow grease. 
-  for(i in unique(df[,unit_index])){
-
-    id_logic <- which(df[,unit_index] == i)
-    valz <- df[id_logic[df[id_logic, treat_status] == 1], time_index]
-    if(!is.na(valz[1])){
-
-      mat <- matrix(NA, ncol = length(valz), nrow = length(id_logic))
-
-      for(j in valz){
-
-        mat[,which(j == valz)] <- df[id_logic, time_index] - j
-      }
-
-      df[id_logic, rel_time] <- apply(mat, 1, function(x) x[which(abs(x) == min(abs(x)))[1]])
-    } else {
-
-      df[id_logic, rel_time] <- -1000
-    }
-  }
-  
+  print('make rel time')
+  rel_time <- 'rel_time'
+   df <- make_rel_time(rel_time=rel_time, df, unit_index, time_index, treat_status)
+    print('rel time made')
+    df <- pdata.frame(df, index=c(unit_index,time_index), drop.index=FALSE, row.names=FALSE)
   # KGC: When would this ever be different than treat_status? Unclear...
-  df$treat <- ifelse(df[,rel_time] >= 0, 1, 0)
+   df$treat <- ifelse(df[,rel_time] >= 0, 1, 0)
   df$treat_diff <- df$treat - lag(df$treat, 1)
   df$treat_diff <- ifelse(df$treat_diff < 0, 0, df$treat_diff)
 
@@ -312,7 +313,7 @@ lpdid <- function(df, window = c(NA, NA), y,
   # ## Insert Time-Varying Controls here...
   # controls_t <- ~ x + y + z
   # controls_t <- ~ x + y + z | FE1 + FE2
-  
+
   controls <- as.character(controls)[2]
   controls_t <- as.character(controls_t)[2]
 
@@ -346,14 +347,17 @@ lpdid <- function(df, window = c(NA, NA), y,
     }
     lagz <- c(lagz, colnames(df)[grepl("y_diff_lag.", colnames(df))])
   }
+  return(df)
+}
 
+lpdid_speed <- function() {
   lpdid_betaz <- rep(0, length(-pre_window:post_window))
   lpdid_sez <- rep(0, length(-pre_window:post_window))
   lpdid_nz <- rep(0, length(-pre_window:post_window))
-  lpdid_df <- vector(mode = "list", length = length(-pre_window:post_window))
 
   if(pooled) loop_bound <- 0 else loop_bound <- max(post_window, pre_window)
   # j<-2
+  # KGC: This should be doable with a lapply of some sort, which I can parallelize. Not doable without that though cause observations should have multiple regressions done on them, right? Worth checking that out though. 
 
   # Way to check that out, save a df for each j and check observations involved. 
 
@@ -361,14 +365,13 @@ lpdid <- function(df, window = c(NA, NA), y,
 
     # Calculate Pooled
     if(pooled & j == 0) df[,y] <- pooled_adjustment(df, y, post_window)
-
+    
     if(!reweight) df$reweight_0 <- df$reweight_use <- 1
 
     # Post
     if(j <= post_window){
-      
+
       df$Dy <- lead(df[,y], j) - df$the_lag
-      df$laglead <- j
 
       # # Create Formula
       # if(!is.null(controls)) controls <- paste0(" + ", paste(controls, collapse = " + "))
@@ -397,8 +400,6 @@ lpdid <- function(df, window = c(NA, NA), y,
         rhs <- time_index
       }
       frmla <- as.formula(paste0(frmla, " | ", rhs))
-
-      df$cluster_var <- df[,cluster]
 
       # Create "Limit"
       if(!nonabsorbing){
@@ -443,15 +444,12 @@ lpdid <- function(df, window = c(NA, NA), y,
         lpdid_sez[match(j, -pre_window:post_window)] <- NA
         lpdid_nz[match(j, -pre_window:post_window)] <- NA
       }
-      df$lim <- lim
-      lpdid_df[[match(j, -pre_window:post_window)]] <- df
-      
     }
+
     # Pre
     if((j>1 & j<=pre_window) || (pmd & j<=pre_window)){
-      
+
       df$Dy <- lag(df[,y], j) - df$the_lag
-      df$laglead <- -j
 
       # if(!is.null(controls)) controls <- paste0(" + ", paste(controls, collapse = " + "))
       # frmla <- as.formula(paste0("Dy ~ treat_diff", controls, " | ", time_index))
@@ -479,8 +477,6 @@ lpdid <- function(df, window = c(NA, NA), y,
         rhs <- time_index
       }
       frmla <- as.formula(paste0(frmla, " | ", rhs))
-
-      df$cluster_var <- df[,cluster]
 
       if(!nonabsorbing){
 
@@ -512,9 +508,6 @@ lpdid <- function(df, window = c(NA, NA), y,
         lpdid_sez[match(-j, -pre_window:post_window)] <- NA
         lpdid_nz[match(-j, -pre_window:post_window)] <- NA
       }
-      df$lim <- lim
-      lpdid_df[[match(-j, -pre_window:post_window)]] <- df
-      
     }
   }
 
@@ -525,10 +518,349 @@ lpdid <- function(df, window = c(NA, NA), y,
                           check.names = FALSE)
   if(pooled) coeftable <- coeftable[match(0, -pre_window:post_window),]
   coeftable[,4] <- pnorm(abs(coeftable$`t value`), lower.tail = F)
-  return(list('coefs'=list(coeftable = coeftable[!is.na(coeftable$Estimate),],
-              #df = df,
+  return(list(coeftable = coeftable[!is.na(coeftable$Estimate),],
+              # df = df,
               window = c(-pre_window:post_window)[!is.na(coeftable$Estimate)],
               nobs = data.frame(window = c(-pre_window:post_window),
-                                nobs = lpdid_nz)),
-          'dfs'=lpdid_df))
+                                nobs = lpdid_nz)))
+}
+
+
+# Function to calculate rel_time for each group
+calculate_rel_time <- function(time_index, treat_status) {
+  valz <- time_index[treat_status == 1]
+  
+  if (length(valz) > 0) {
+    # Create a matrix of differences
+    mat <- outer(time_index, valz, "-")
+    
+    # Find the smallest absolute value in each row
+    rel_time <- apply(mat, 1, function(x) x[which.min(abs(x))])
+  } else {
+    rel_time <- rep(-1000, length(time_index))
+  }
+  
+  return(rel_time)
+}
+
+lpdid_dt_prep <- function(df, window = c(NA, NA), y,
+                  unit_index, time_index,
+                  treat_status = "",
+                  cluster = NULL,
+                  controls = NULL,
+                  controls_t = NULL,
+                  outcome_lags = 0,
+                  reweight = FALSE,
+                  pmd = FALSE, pmd_lag,
+                  composition_correction = FALSE,
+                  pooled = FALSE,
+                  nonabsorbing_lag = NULL,
+                  omitted=-1){
+
+  if(is.null(cluster)) cluster <- unit_index
+
+  env_list = list(y = y, unit_index = unit_index, time_index = time_index, treat_status = treat_status, cluster = cluster, controls = controls, controls_t = controls_t, outcome_lags = outcome_lags, reweight = reweight, pmd = pmd, pmd_lag = pmd_lag, composition_correction = composition_correction, pooled = pooled, nonabsorbing_lag = nonabsorbing_lag)
+
+  pre_window <- -1*window[1]; post_window <- window[2]
+
+  # Convert df to pdata.frame
+  if(!inherits(df, "data.table")) df <- as.data.table(df)
+  df[,time_index] <- as.numeric(df[,time_index,env=env_list])
+
+  # Calculate Pre-Mean Differences
+  if(pmd){
+    # calculate the lagged rolling mean of the outcome using data.table
+    df[, the_lag := shift(frollmean(y, n=pmd_lag,algo='exact'),1), by=unit_index, env=env_list]
+
+  } else {
+    df[, the_lag := shift(y, 1)]    
+  }
+
+  nonabsorbing <- F
+  if(is.null(nonabsorbing_lag)) nonabsorbing_lag <- Inf else nonabsorbing <- T
+    
+  # create "rel_time" variable for nonabsorbing
+   df[, rel_time := calculate_rel_time(time_index, treat_status), by = unit_index, env=env_list]
+
+  # KGC: When would this ever be different than treat_status? Unclear...
+    df[, treat := ifelse(rel_time >= 0, 1, 0)]
+    df[, treat_diff := treat - shift(treat, 1, fill = NA), by=unit_index,env=env_list]
+    df[, treat_diff := ifelse(treat_diff < 0, 0, treat_diff)]
+
+  # ## Insert Controls here...
+  # controls <- ~ a + b | DV3
+  # ## Insert Time-Varying Controls here...
+  # controls_t <- ~ x + y + z
+  # controls_t <- ~ x + y + z | FE1 + FE2
+
+  controls <- as.character(controls)[2]
+  controls_t <- as.character(controls_t)[2]
+
+  # Calculate lags of the outcome
+  if(outcome_lags>0){
+
+    df[,paste0("y_diff_lag", 1:outcome_lags) := lapply(1:outcome_lags, function(outcome_lag) shift(y - shift(y, 1), outcome_lag)), by=i, env=env_list]
+
+    lagz <-colnames(df)[grepl("y_diff_lag.", colnames(df))]
+  }
+
+  df[,cluster_var:=cluster,env=env_list]
+  
+  if(!reweight) df[, c('reweight_0', 'reweight_use') := 1]
+  
+  if(pooled) {
+    df[, y := shift(frollmean(y, n=post_window,algo='exact'),1), by=i, env=list(y='y',i='i')]
+    return(df)
+  }
+  else {
+  dfs <- lapply(-pre_window:post_window, function(j) {
+    df_sub=df
+    if (j==omitted) return(NULL)
+    # Post
+    else if(between(j,0,post_window)){
+    # print(paste('post:',j))
+    df_sub[,Dy:= shift(y, j, type='lead') - the_lag, by=unit_index, env=env_list]
+    
+    if(!is.na(controls_t[1])) df_sub[,paste0(controls_t, ".l") := shift(.SD, j,type='lead'), .SDcols = controls_t, by=unit_index, env=env_list]
+    
+      # Create "Limit"
+      if(!nonabsorbing){
+        
+        lim <- !is.na(df_sub[,Dy]) & !is.na(df_sub[,treat_diff]) & !is.na(shift(df_sub[,treat],j,type='lead')) & (df_sub[,treat_diff] == 1 | shift(df_sub[,treat],j,type='lead') == 0)
+        if(composition_correction) lim <- !is.na(df_subf[,Dy]) & !is.na(df_sub[,treat_diff]) & !is.na(shift(df_sub[,treat],j,type='lead')) & (df_sub[,treat_diff] == 1 | shift(df_sub[,treat],post_window,type='lead') == 0) & (is.na(df_sub[,treat_date]) | (df_sub[,treat_date] < max(df_sub[,time_index]) - post_window))
+      } else {
+
+        ## Non-Absorbing Limit
+        lim_ctrl <- TRUE; lim_treat <- TRUE
+        for(i in -nonabsorbing_lag:j){
+
+          lim_ctrl <- lim_ctrl & shift(df_sub[,treat_diff],-i) == 0
+          lim_treat <- lim_treat & if(i >= 0) shift(df_sub[,treat],i,type='lead') == 1 else shift(df_sub[,treat],-i) == 0
+        }
+        df_sub[,lim_c := ifelse(lim_ctrl, 1, 0)]
+        df_sub[,lim_t := ifelse(lim_treat, 1, 0)]
+        lim <- lim_ctrl | lim_treat # & df_sub$reweight_use > 0
+      }
+      lim <- !is.na(lim) & lim
+
+      # Calculate weights for j
+      if(reweight){
+        df_sub[ , reweight_use := get_weights(df = df_sub, j = j, time_index = time_index, lim = lim), env=env_list]
+        if(j == 0) df_sub[, reweight_0:= reweight_use] 
+      }
+    }
+
+    # Pre (Not sure about pmd here...)
+    # Before it was: if((j>1 & j<=pre_window) || (pmd & j<=pre_window)){
+        # The first just says only j between -pre_window and -1
+        # The second says only j between -pre_window and 0 when it is pmd...
+    else if((between(j,-pre_window,-1)) || (pmd & between(j,-pre_window,0))){
+        # print(paste('pre:',j))
+      df_sub[,Dy:= shift(y, j, type='lag') - the_lag, by=unit_index, env=env_list]
+
+      if(!is.na(controls_t[1])) df_sub[,paste0(controls_t, ".l") := shift(.SD, j,type='lag'), .SDcols = controls_t, by=unit_index, env=env_list]
+
+      if(!nonabsorbing){
+
+        lim <- !is.na(df_sub[,Dy]) & !is.na(df_sub[,treat_diff]) & !is.na(df_sub[,treat]) & (df_sub[,treat_diff] == 1 | df_sub[,treat] == 0)
+        if(composition_correction) lim <- !is.na(df_sub[,Dy]) & !is.na(df_sub[,treat_diff]) & !is.na(df_sub[,treat]) & (df_sub[,treat_diff] == 1 | lead(df_sub[,treat], post_window) == 0) & (is.na(df_sub[,treat_date]) | (df_sub[,treat_date] < max(df_sub[,time_index]) - post_window))
+      } else {
+
+        ## Non-Absorbing Limit
+        lim_ctrl <- TRUE; lim_treat <- TRUE
+        for(i in -nonabsorbing_lag:j){
+
+          lim_ctrl <- lim_ctrl & shift(df_sub[,treat_diff],-i) == 0
+          lim_treat <- lim_treat & if(i >= 0) shift(df_sub[,treat],i,type='lead') == 1 else shift(df_sub[,treat],-i) == 0
+        }        
+        lim <- lim_ctrl | lim_treat
+      }
+    }
+    
+    # This is now broken -- it overwrites across the different j's so it only saves the output for j=10. It did not do this when I first wrote it, so I'm not sure what changed. I probably breathed funny because data.table is a jerk.
+    lim <- lim & df_sub[,reweight_use] > 0
+    
+    df_sub[,laglead:=j]
+    df_sub[,lim:=lim]
+    print(df_sub)
+    return(df_sub)
+    }
+  )
+  return(rbindlist(dfs))
+    }
+}
+
+lpdid_dt <- function(df, window = c(NA, NA), y,
+                  unit_index, time_index,
+                  treat_status = "",
+                  cluster = NULL,
+                  controls = NULL,
+                  controls_t = NULL,
+                  outcome_lags = 0,
+                  reweight = FALSE,
+                  pmd = FALSE, pmd_lag,
+                  composition_correction = FALSE,
+                  pooled = FALSE,
+                  nonabsorbing_lag = NULL){
+
+  lpdid_betaz <- rep(0, length(-pre_window:post_window))
+  lpdid_sez <- rep(0, length(-pre_window:post_window))
+  lpdid_nz <- rep(0, length(-pre_window:post_window))
+
+  if(pooled) loop_bound <- 0 else loop_bound <- max(post_window, pre_window)
+  # j<-2
+  # KGC: This should be doable with a lapply of some sort, which I can parallelize. Not doable without that though cause observations should have multiple regressions done on them, right? Worth checking that out though. 
+  # Way to check that out, save a df for each j and check observations involved. 
+
+  lapply(0:loop_bound, function(j) {
+
+    # Calculate Pooled
+    if(pooled & j == 0) df[, y := shift(frollmean(y, n=post_window,algo='exact'),1), by=i, env=list(y='y',i='i')]
+      
+    if(!reweight) df[, c('reweight_0', 'reweight_use') := 1]
+
+    # Post
+    if(j <= post_window){
+
+      df$Dy <- lead(df[,y], j) - df$the_lag
+      df[,Dy:= shift(y, j, type='lead') - the_lag]
+
+      # # Create Formula
+      # if(!is.null(controls)) controls <- paste0(" + ", paste(controls, collapse = " + "))
+      # frmla <- as.formula(paste0("Dy ~ treat_diff", controls, " | ", time_index))
+
+      frmla <- "Dy ~ treat_diff"
+      if(!is.null(lagz[1])) lagz <- paste(lagz, collapse = " + ")
+      if(!is.null(lagz[1])) frmla <- paste0(frmla, " + ", lagz)
+      if(!is.na(controls[1])) controls_use <- paste(controls, collapse = " + ")
+      if(!is.na(controls[1])) frmla <- paste(frmla, "+", paste(controls, collapse = " + "))
+
+      if(!is.na(controls_t[1])){
+
+        for(ctrl in controls_t){
+
+          df[,paste0(ctrl, ".l")] <- lead(df[,ctrl], j)
+        }
+
+        controls_t_use <- paste0(controls_t, ".l")
+        frmla <- paste0(frmla, " + ", paste(controls_t_use, collapse = " + "))
+      }
+
+      if(!is.null(FE)){
+        rhs <- paste(time_index, " + ", paste(unlist(strsplit(FE, "\\s*\\+\\s*")), collapse = " + "))
+      } else {
+        rhs <- time_index
+      }
+      frmla <- as.formula(paste0(frmla, " | ", rhs))
+
+      # Create "Limit"
+      if(!nonabsorbing){
+        # KGC: Specifically, I need to check the lims across each j. When does it change?
+        lim <- !is.na(df[,"Dy"]) & !is.na(df$treat_diff) & !is.na(lead(df$treat, j)) & (df$treat_diff == 1 | lead(df$treat, j) == 0)
+        if(composition_correction) lim <- !is.na(df[,"Dy"]) & !is.na(df$treat_diff) & !is.na(lead(df$treat, j)) & (df$treat_diff == 1 | lead(df$treat, post_window) == 0) & (is.na(df$treat_date) | (df$treat_date < max(df[,time_index]) - post_window))
+      } else {
+
+        ## Non-Absorbing Limit
+        lim_ctrl <- TRUE; lim_treat <- TRUE
+        for(i in -nonabsorbing_lag:j){
+
+          lim_ctrl <- lim_ctrl & lag(df$treat_diff, -i) == 0
+          lim_treat <- lim_treat & if(i >= 0) lead(df$treat, i) == 1 else lag(df$treat, -i) == 0
+        }
+        df$lim_c <- ifelse(lim_ctrl, 1, 0)
+        df$lim_t <- ifelse(lim_treat, 1, 0)
+        lim <- lim_ctrl | lim_treat# & df$reweight_use > 0
+      }
+      lim <- !is.na(lim) & lim
+
+      # Calculate weights for j
+      if(reweight){
+
+        df$reweight_use <- get_weights(df = df, j = j, time_index = time_index, lim = lim)
+        if(j == 0) df$reweight_0 <- df$reweight_use
+      }
+
+      lim <- lim & df$reweight_use > 0
+
+      # Check for perfect multi-colinearity
+      if(sum(lim) > 0 && sum(!aggregate(df$treat_diff[lim], list(df[lim, time_index]), mean)$x %in% c(0, 1))){
+
+        # Estimate and Save
+        tmp <- suppressMessages(feols(frmla, data = df[lim,], cluster = ~cluster_var, weights = ~reweight_use))
+        lpdid_betaz[match(j, -pre_window:post_window)] <- tmp$coeftable[1,1]
+        lpdid_sez[match(j, -pre_window:post_window)] <- tmp$coeftable[1,2]
+        lpdid_nz[match(j, -pre_window:post_window)] <- nobs(tmp)
+      } else {
+
+        lpdid_betaz[match(j, -pre_window:post_window)] <- NA
+        lpdid_sez[match(j, -pre_window:post_window)] <- NA
+        lpdid_nz[match(j, -pre_window:post_window)] <- NA
+      }
+    }
+
+    # Pre
+    if((j>1 & j<=pre_window) || (pmd & j<=pre_window)){
+
+      df$Dy <- lag(df[,y], j) - df$the_lag
+
+      # if(!is.null(controls)) controls <- paste0(" + ", paste(controls, collapse = " + "))
+      # frmla <- as.formula(paste0("Dy ~ treat_diff", controls, " | ", time_index))
+
+      frmla <- "Dy ~ treat_diff"
+      if(!is.null(lagz[1])) lagz <- paste(lagz, collapse = " + ")
+      if(!is.null(lagz[1])) frmla <- paste0(frmla, " + ", lagz)
+      if(!is.na(controls[1])) controls_use <- paste(controls, collapse = " + ")
+      if(!is.na(controls[1])) frmla <- paste(frmla, "+", paste(controls, collapse = " + "))
+
+      if(!is.na(controls_t[1])){
+
+        for(ctrl in controls_t){
+
+          df[,paste0(ctrl, ".l")] <- lag(df[,ctrl], j)
+        }
+
+        controls_t_use <- paste0(controls_t, ".l")
+        frmla <- paste0(frmla, " + ", paste(controls_t_use, collapse = " + "))
+      }
+
+      if(!is.null(FE)){
+        rhs <- paste(time_index, " + ", paste(unlist(strsplit(FE, "\\s*\\+\\s*")), collapse = " + "))
+      } else {
+        rhs <- time_index
+      }
+      frmla <- as.formula(paste0(frmla, " | ", rhs))
+
+      if(!nonabsorbing){
+
+        lim <- !is.na(df[,"Dy"]) & !is.na(df$treat_diff) & !is.na(df$treat) & (df$treat_diff == 1 | df$treat == 0)
+        if(composition_correction) lim <- !is.na(df[,"Dy"]) & !is.na(df$treat_diff) & !is.na(df$treat) & (df$treat_diff == 1 | lead(df$treat, post_window) == 0) & (is.na(df$treat_date) | (df$treat_date < max(df[,time_index]) - post_window))
+      } else {
+
+        ## Non-Absorbing Limit
+        lim_ctrl <- TRUE; lim_treat <- TRUE
+        for(i in -nonabsorbing_lag:j){
+
+          lim_ctrl <- lim_ctrl & lag(df$treat_diff, -i) == 0
+          lim_treat <- lim_treat & if(i >= 0) lead(df$treat, i) == 1 else lag(df$treat, -i) == 0
+        }
+        lim <- lim_ctrl | lim_treat
+      }
+
+      lim <- !is.na(lim) & lim & df$reweight_0 > 0
+
+      if(sum(lim) > 0 && sum(!aggregate(df$treat_diff[lim], list(df[lim, time_index]), mean)$x %in% c(0, 1))){
+
+        suppressMessages(tmp <- feols(frmla, data = df[lim,], cluster = ~cluster_var, weights = ~reweight_0))
+        lpdid_betaz[match(-j, -pre_window:post_window)] <- tmp$coeftable[1,1]
+        lpdid_sez[match(-j, -pre_window:post_window)] <- tmp$coeftable[1,2]
+        lpdid_nz[match(-j, -pre_window:post_window)] <- nobs(tmp)
+      } else {
+
+        lpdid_betaz[match(-j, -pre_window:post_window)] <- NA
+        lpdid_sez[match(-j, -pre_window:post_window)] <- NA
+        lpdid_nz[match(-j, -pre_window:post_window)] <- NA
+      }
+    }
+  }
+  )
 }
