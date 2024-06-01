@@ -85,15 +85,14 @@ get_weights_speed <- function(df, j, time_index, lim){
 #' @param opacity A numeric value between 0 and 1 that corresponds to the opacity of the color.
 #' @return An event study plot.
 #' @export
-plot_lpdid <- function(reg, conf = .95, segments = TRUE, add = FALSE,
+plot_lpdid_dt <- function(reg, conf = .95, segments = TRUE, add = FALSE,
                        xlab = NULL, ylab = NULL,
                        ylim = NULL,
                        main = "", x.shift = 0,
                        pch = 19, cex = 1, col = "black", opacity = 1){
 
-  if(nrow(reg$coeftable) != length(reg$window)) stop("coeftable and window are not the same length.  It is likely that pooled=TRUE in the lpdid function.  An event study cannot be plotted when pooled=TRUE.")
-  coeftable <- reg$coeftable
-  coeftable$t <- reg$window
+#   if(nrow(reg$coeftable) != length(reg$window)) stop("coeftable and window are not the same length.  It is likely that pooled=TRUE in the lpdid function.  An event study cannot be plotted when pooled=TRUE.")
+  coeftable <- reg$coefs
   conf_z <- abs(qnorm((1-conf)/2))
   uCI <- coeftable$Estimate + conf_z*coeftable$`Std. Error`
   lCI <- coeftable$Estimate - conf_z*coeftable$`Std. Error`
@@ -690,18 +689,14 @@ lpdid_dt_prep <- function(df, window = c(NA, NA), y,
     }
 }
 
-lpdid_dt <- function(df, window = c(NA, NA), 
+lpdid_dt_reg <- function(df, window = c(NA, NA), y,
                   unit_index, time_index,
                   treat_status = "",
                   cluster = NULL,
                   controls = NULL,
                   controls_t = NULL,
-                  outcome_lags = 0,
                   reweight = FALSE,
-                  pmd = FALSE, pmd_lag,
-                  composition_correction = FALSE,
-                  pooled = FALSE,
-                  nonabsorbing_lag = NULL){
+                  omitted=-1){
 
   lagz <- colnames(df)[grepl("y_diff_lag.", colnames(df))]
   if (length(lagz) == 0) lagz <- NULL
@@ -808,4 +803,21 @@ extract_number <- function(input_string,pattern="sample: (-?\\d+)") {
   numeric_value <- as.numeric(extracted_value)
   
   return(numeric_value)
+}
+
+lpdid_dt <- function(df, window = c(NA, NA), y,
+                  unit_index, time_index,
+                  treat_status = "",
+                  cluster = NULL,
+                  controls = NULL,
+                  controls_t = NULL,
+                  outcome_lags = 0,
+                  reweight = FALSE,
+                  pmd = FALSE, pmd_lag,
+                  composition_correction = FALSE,
+                  pooled = FALSE,
+                  nonabsorbing_lag = NULL,
+                  omitted=-1) {
+    dt<-lpdid_dt_prep(df, window = window, y = y,unit_index = unit_index, time_index = time_index,treat_status = treat_status,cluster = cluster,controls = controls,controls_t = controls_t,outcome_lags = outcome_lags,reweight = reweight,pmd = pmd, pmd_lag = pmd_lag,composition_correction = composition_correction,pooled = pooled,nonabsorbing_lag = nonabsorbing_lag,omitted=omitted)  
+    return(lpdid_dt_reg(dt, window = window, y = y,unit_index = unit_index, time_index = time_index,cluster = cluster,controls = controls,controls_t = controls_t,reweight = reweight,omitted=omitted))
 }
