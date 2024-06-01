@@ -1,4 +1,5 @@
 source("renv/activate.R")
-install.packages(c('plm','fixest'))
+install.packages(c('plm','fixest','data.table'))
 library(plm)
 library(fixest)
+library(data.table)
