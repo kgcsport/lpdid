@@ -764,8 +764,8 @@ lpdid_dt <- function(df, window = c(NA, NA),
        
       frmla <- as.formula(paste0(frmla, " | ", rhs))
 
-      tmp <- suppressMessages(feols(frmla, data = df[(lim),], cluster = ~cluster_var, weights = ~reweight_use, fsplit=~laglead))
-    return(tmp)
+      tmp <- suppressMessages(feols(frmla, data = df[(lim),], cluster = ~cluster_var, weights = ~reweight_use, split=~laglead))
+    
       lpdid_betaz <- sapply(tmp, function(x) x$coeftable[1,1])
       lpdid_sez   <- sapply(tmp, function(x) x$coeftable[1,2])
       lpdid_nz    <- sapply(tmp, function(x) nobs(x))
