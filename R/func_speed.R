@@ -543,6 +543,33 @@ calculate_rel_time <- function(time_index, treat_status) {
   return(rel_time)
 }
 
+
+#' Local Projections Difference-in-Differences Prep
+#'
+#' This function preps a data.table for LP-DiD regressions as outlined in Dube et al. (2023) <doi:10.3386/w31184>.
+#' @param df The dataset used in the analysis.
+#' @param window A vector of length two that denotes the length of the pre- and post-periods.
+#'  The first number, denoting the number of pre-periods before treamtent, should be negative and second, denoting the number of post periods after treatment, should be positive.
+#' @param y The outcome variable.  This should be input as a character, the name of the outcome variable in the data.
+#' @param treat_status The name of the column that denotes treatment status.
+#'  This vector should take on a value of 1 for each time the unit is treated.
+#'  As an example, in a state-year panel, if a state is treated in 1990 and 2010, the state should have 1's for 1990 and 2010 only.  All other year observations of this variable for this unit should be equal to 0.
+#' @param unit_index The name of the column that represents the unit ID.  This should be a character.
+#' @param time_index The name of the column that represents the calendar time.  This should be a character.
+#' @param cluster The name of the column by which to cluster the standard errors.  Default is the unit ID.
+#' @param controls A formula of control variables to be included in the regression formula. The form should be: `~ X1 + X2 | FE1 + FE2`. These controls will be time invariant.
+#' @param controls_t A formula of control variables to be included in the regression formula. The form should be: `~ X1 + X2 | FE1 + FE2`. These controls will be time varying.
+#' @param outcome_lags The number of outcome lags to be included in the analysis.
+#'  For an example of this, simulate endogenous data via genr_sim_data(FALSE), and include one outcome lag.
+#' @param reweight A boolean (TRUE or FALSE) value that will re-weight the regression and generate ATT rather than VWATT. The default is FALSE, which corresponds to the estimator calculating the VWATT (variance weighted average treatment effect on the treated).
+#' @param pmd A boolean (TRUE or FALSE) value that, if equal to TRUE, will use pre-treatment means rather than a single value from t-1.
+#' @param pmd_lag The number of pre-treatment periods to include in taking the mean.
+#' @param composition_correction A boolean value that will remove later-treated observations from the control group even before they are treated.  See Section 2.10 "Composition effects".
+#' @param pooled A boolean value (TRUE or FALSE) that, if equal to TRUE, will calculate the treatment effect pooled over all post-periods.
+#' @param nonabsorbing_lag Sets the number of periods after which dynamic effects stabilize. This number must be greater than zero, and will indicate to the function that you'd like to estimate a nonabsorbing treatment effect.
+
+#' @return The prepped and stacked data.tables.
+#' @export
 lpdid_dt_prep <- function(df, window = c(NA, NA), y,
                   unit_index, time_index,
                   treat_status = "",
@@ -684,9 +711,24 @@ lpdid_dt_prep <- function(df, window = c(NA, NA), y,
     }
 }
 
-lpdid_dt_reg <- function(df, window = c(NA, NA), y,
+
+#' Local Projections Difference-in-Differences Regression
+#'
+#' This function estimates LP-DiD regressions as outlined in Dube et al. (2023) <doi:10.3386/w31184>.
+#' @param df The dataset used in the analysis.
+#' @param unit_index The name of the column that represents the unit ID.  This should be a character.
+#' @param time_index The name of the column that represents the calendar time.  This should be a character.
+#' @param cluster The name of the column by which to cluster the standard errors.  Default is the unit ID.
+#' @param controls A formula of control variables to be included in the regression formula. The form should be: `~ X1 + X2 | FE1 + FE2`. These controls will be time invariant.
+#' @param controls_t A formula of control variables to be included in the regression formula. The form should be: `~ X1 + X2 | FE1 + FE2`. These controls will be time varying.
+#' @param outcome_lags The number of outcome lags to be included in the analysis.
+#'  For an example of this, simulate endogenous data via genr_sim_data(FALSE), and include one outcome lag.
+#' @param reweight A boolean (TRUE or FALSE) value that will re-weight the regression and generate ATT rather than VWATT. The default is FALSE, which corresponds to the estimator calculating the VWATT (variance weighted average treatment effect on the treated).
+
+#' @return A list including a coefficient table and the data.table for the regression.
+#' @export
+lpdid_dt_reg <- function(df,
                   unit_index, time_index,
-                  treat_status = "",
                   cluster = NULL,
                   controls = NULL,
                   controls_t = NULL,
@@ -812,5 +854,5 @@ lpdid_dt <- function(df, window = c(NA, NA), y,
                   pooled = FALSE,
                   nonabsorbing_lag = NULL) {
     dt<-lpdid_dt_prep(df, window = window, y = y,unit_index = unit_index, time_index = time_index,treat_status = treat_status,cluster = cluster,controls = controls,controls_t = controls_t,outcome_lags = outcome_lags,reweight = reweight,pmd = pmd, pmd_lag = pmd_lag,composition_correction = composition_correction,pooled = pooled,nonabsorbing_lag = nonabsorbing_lag)
-    return(lpdid_dt_reg(dt, window = window, y = y,unit_index = unit_index, time_index = time_index,cluster = cluster,controls = controls,controls_t = controls_t,reweight = reweight))
+    return(lpdid_dt_reg(dt, unit_index = unit_index, time_index = time_index,cluster = cluster,controls = controls,controls_t = controls_t,reweight = reweight))
 }
