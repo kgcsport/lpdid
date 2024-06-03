@@ -13,7 +13,7 @@ R Package for LP-DiD
 - Installation Instructions:
 
     ```
-      devtools::install_github("alexCardazzi/lpdid")
+      devtools::install_github("kgcsport/lpdid")
     ```
     
  - And then after installation can be called by:
