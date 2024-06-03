@@ -425,16 +425,16 @@ lpdid_dt_prep <- function(df, window = c(NA, NA), y,
   pre_window <- -1*window[1]; post_window <- window[2]
 
   # Convert df to pdata.frame
-  if(!inherits(df, "data.table")) df <- as.data.table(df)
+  if(!inherits(df, "data.table")) df <- data.table::as.data.table(df)
   df[,time_index] <- as.numeric(df[,time_index,env=env_list])
 
   # Calculate Pre-Mean Differences
   if(pmd){
     # calculate the lagged rolling mean of the outcome using data.table
-    df[, the_lag := shift(frollmean(y, n=pmd_lag,algo='exact'),1), by=unit_index, env=env_list]
+    df[, the_lag := data.table::shift(frollmean(y, n=pmd_lag,algo='exact'),1), by=unit_index, env=env_list]
 
   } else {
-    df[, the_lag := shift(y, 1)]    
+    df[, the_lag := data.table::shift(y, 1), by=unit_index, env=env_list]    
   }
 
   nonabsorbing <- F
@@ -445,7 +445,7 @@ lpdid_dt_prep <- function(df, window = c(NA, NA), y,
 
   # KGC: When would this ever be different than treat_status? Unclear...
     df[, treat := ifelse(rel_time >= 0, 1, 0)]
-    df[, treat_diff := treat - shift(treat, 1, fill = NA), by=unit_index,env=env_list]
+    df[, treat_diff := treat - data.table::shift(treat, 1, fill = NA), by=unit_index,env=env_list]
     df[, treat_diff := ifelse(treat_diff < 0, 0, treat_diff)]
 
   # ## Insert Controls here...
@@ -460,7 +460,7 @@ lpdid_dt_prep <- function(df, window = c(NA, NA), y,
   # Calculate lags of the outcome
   if(outcome_lags>0){
 
-    df[,paste0("y_diff_lag", 1:outcome_lags) := lapply(1:outcome_lags, function(outcome_lag) shift(y - shift(y, 1), outcome_lag)), by=i, env=env_list]
+    df[,paste0("y_diff_lag", 1:outcome_lags) := lapply(1:outcome_lags, function(outcome_lag) data.table::shift(y - data.table::shift(y, 1), outcome_lag)), by=i, env=env_list]
 
     lagz <-colnames(df)[grepl("y_diff_lag.", colnames(df))]
   }
@@ -470,7 +470,7 @@ lpdid_dt_prep <- function(df, window = c(NA, NA), y,
   if(!reweight) df[, c('reweight_0', 'reweight_use') := 1]
   
   if(pooled) {
-    df[, y := shift(frollmean(y, n=post_window,algo='exact'),1), by=i, env=list(y='y',i='i')]
+    df[, y := data.table::shift(frollmean(y, n=post_window,algo='exact'),1), by=i, env=list(y='y',i='i')]
     return(df)
   }
   else {
@@ -478,18 +478,18 @@ lpdid_dt_prep <- function(df, window = c(NA, NA), y,
     df_sub=copy(df)
     if (j==-1 & !pmd) return(NULL)
     # Post
-    else if(between(j,0,post_window)){
+    else if(data.table::between(j,0,post_window)){
     # print(paste('post:',j))
-    df_sub[,Dy:= shift(y, j, type='lead') - the_lag, by=unit_index, env=env_list]
+    df_sub[,Dy:= data.table::shift(y, j, type='lead') - the_lag, by=unit_index, env=env_list]
     
-    if(!is.na(controls_t[1])) df_sub[,paste0(controls_t, ".l") := shift(.SD, j,type='lead'), .SDcols = controls_t, by=unit_index, env=env_list]
+    if(!is.na(controls_t[1])) df_sub[,paste0(controls_t, ".l") := data.table::shift(.SD, j,type='lead'), .SDcols = controls_t, by=unit_index, env=env_list]
     
       # Create "Limit"
       if(!nonabsorbing){
         
-        lim <- !is.na(df_sub[,Dy]) & !is.na(df_sub[,treat_diff]) & !is.na(shift(df_sub[,treat],j,type='lead')) & (df_sub[,treat_diff] == 1 | shift(df_sub[,treat],j,type='lead') == 0)
+        lim <- !is.na(df_sub[,Dy]) & !is.na(df_sub[,treat_diff]) & !is.na(data.table::shift(df_sub[,treat],j,type='lead')) & (df_sub[,treat_diff] == 1 | data.table::shift(df_sub[,treat],j,type='lead') == 0)
 
-        if(composition_correction) lim <- !is.na(df_subf[,Dy]) & !is.na(df_sub[,treat_diff]) & !is.na(shift(df_sub[,treat],j,type='lead')) & (df_sub[,treat_diff] == 1 | shift(df_sub[,treat],post_window,type='lead') == 0) & (is.na(df_sub[,treat_date]) | (df_sub[,treat_date] < max(df_sub[,time_index]) - post_window))
+        if(composition_correction) lim <- !is.na(df_subf[,Dy]) & !is.na(df_sub[,treat_diff]) & !is.na(data.table::shift(df_sub[,treat],j,type='lead')) & (df_sub[,treat_diff] == 1 | data.table::shift(df_sub[,treat],post_window,type='lead') == 0) & (is.na(df_sub[,treat_date]) | (df_sub[,treat_date] < max(df_sub[,time_index]) - post_window))
 
       } else {
 
@@ -497,8 +497,8 @@ lpdid_dt_prep <- function(df, window = c(NA, NA), y,
         lim_ctrl <- TRUE; lim_treat <- TRUE
         for(k in -nonabsorbing_lag:j){
 
-          lim_ctrl <- lim_ctrl & shift(df_sub[,treat_diff],k,type='lead') == 0
-          lim_treat <- lim_treat & if(k >= 0) shift(df_sub[,treat],k,type='lead') == 1 else shift(df_sub[,treat],k,type='lead') == 0
+          lim_ctrl <- lim_ctrl & data.table::shift(df_sub[,treat_diff],k,type='lead') == 0
+          lim_treat <- lim_treat & if(k >= 0) data.table::shift(df_sub[,treat],k,type='lead') == 1 else data.table::shift(df_sub[,treat],k,type='lead') == 0
         }
         lim <- lim_ctrl | lim_treat # & df_sub$reweight_use > 0
       }
@@ -512,24 +512,24 @@ lpdid_dt_prep <- function(df, window = c(NA, NA), y,
     }
 
     # Pre
-    else if((between(j,-pre_window,-1)) || (pmd & between(j,-pre_window,0))){
+    else if((data.table::between(j,-pre_window,-1)) || (pmd & data.table::between(j,-pre_window,0))){
         # here the negative number lead looks back
-      df_sub[,Dy:= shift(y, j, type='lead') - the_lag, by=unit_index, env=env_list]
+      df_sub[,Dy:= data.table::shift(y, j, type='lead') - the_lag, by=unit_index, env=env_list]
 
-      if(!is.na(controls_t[1])) df_sub[,paste0(controls_t, ".l") := shift(.SD, j,type='lead'), .SDcols = controls_t, by=unit_index, env=env_list]
+      if(!is.na(controls_t[1])) df_sub[,paste0(controls_t, ".l") := data.table::shift(.SD, j,type='lead'), .SDcols = controls_t, by=unit_index, env=env_list]
 
       if(!nonabsorbing){
 
         lim <- !is.na(df_sub[,Dy]) & !is.na(df_sub[,treat_diff]) & !is.na(df_sub[,treat]) & (df_sub[,treat_diff] == 1 | df_sub[,treat] == 0)
-        if(composition_correction) lim <- !is.na(df_sub[,Dy]) & !is.na(df_sub[,treat_diff]) & !is.na(df_sub[,treat]) & (df_sub[,treat_diff] == 1 | shift(df_sub[,treat], post_window, type='lead') == 0) & (is.na(df_sub[,treat_date]) | (df_sub[,treat_date] < max(df_sub[,time_index]) - post_window))
+        if(composition_correction) lim <- !is.na(df_sub[,Dy]) & !is.na(df_sub[,treat_diff]) & !is.na(df_sub[,treat]) & (df_sub[,treat_diff] == 1 | data.table::shift(df_sub[,treat], post_window, type='lead') == 0) & (is.na(df_sub[,treat_date]) | (df_sub[,treat_date] < max(df_sub[,time_index]) - post_window))
       } else {
 
         ## Non-Absorbing Limit -- base code seems bugged
         lim_ctrl <- TRUE; lim_treat <- TRUE
         for(k in -nonabsorbing_lag:j){
 
-          lim_ctrl <- lim_ctrl & shift(df_sub[,treat_diff],k,type='lead') == 0
-          lim_treat <- lim_treat & if(k >= 0) shift(df_sub[,treat],k,type='lead') == 1 else shift(df_sub[,treat],k,type='lead') == 0
+          lim_ctrl <- lim_ctrl & data.table::shift(df_sub[,treat_diff],k,type='lead') == 0
+          lim_treat <- lim_treat & if(k >= 0) data.table::shift(df_sub[,treat],k,type='lead') == 1 else data.table::shift(df_sub[,treat],k,type='lead') == 0
         }        
         lim <- lim_ctrl | lim_treat
       }
