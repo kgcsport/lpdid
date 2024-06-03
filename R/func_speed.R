@@ -554,8 +554,7 @@ lpdid_dt_prep <- function(df, window = c(NA, NA), y,
                   pmd = FALSE, pmd_lag,
                   composition_correction = FALSE,
                   pooled = FALSE,
-                  nonabsorbing_lag = NULL,
-                  omitted=-1){
+                  nonabsorbing_lag = NULL){
 
   if(is.null(cluster)) cluster <- unit_index
 
@@ -615,7 +614,7 @@ lpdid_dt_prep <- function(df, window = c(NA, NA), y,
   else {
   dfs <- lapply(-pre_window:post_window, function(j) {
     df_sub=copy(df)
-    if (j==omitted) return(NULL)
+    if (j==-1 & !pmd) return(NULL)
     # Post
     else if(between(j,0,post_window)){
     # print(paste('post:',j))
@@ -627,18 +626,18 @@ lpdid_dt_prep <- function(df, window = c(NA, NA), y,
       if(!nonabsorbing){
         
         lim <- !is.na(df_sub[,Dy]) & !is.na(df_sub[,treat_diff]) & !is.na(shift(df_sub[,treat],j,type='lead')) & (df_sub[,treat_diff] == 1 | shift(df_sub[,treat],j,type='lead') == 0)
+
         if(composition_correction) lim <- !is.na(df_subf[,Dy]) & !is.na(df_sub[,treat_diff]) & !is.na(shift(df_sub[,treat],j,type='lead')) & (df_sub[,treat_diff] == 1 | shift(df_sub[,treat],post_window,type='lead') == 0) & (is.na(df_sub[,treat_date]) | (df_sub[,treat_date] < max(df_sub[,time_index]) - post_window))
+
       } else {
 
-        ## Non-Absorbing Limit
+        ## Non-Absorbing Limit -- base code seems bugged -- need to check paper (rough sense is this is about splitting out clean controls for the second, third treatments, so you are not a control if previously treated.)
         lim_ctrl <- TRUE; lim_treat <- TRUE
-        for(i in -nonabsorbing_lag:j){
+        for(k in -nonabsorbing_lag:j){
 
-          lim_ctrl <- lim_ctrl & shift(df_sub[,treat_diff],-i) == 0
-          lim_treat <- lim_treat & if(i >= 0) shift(df_sub[,treat],i,type='lead') == 1 else shift(df_sub[,treat],-i) == 0
+          lim_ctrl <- lim_ctrl & shift(df_sub[,treat_diff],k,type='lead') == 0
+          lim_treat <- lim_treat & if(k >= 0) shift(df_sub[,treat],k,type='lead') == 1 else shift(df_sub[,treat],k,type='lead') == 0
         }
-        df_sub[,lim_c := ifelse(lim_ctrl, 1, 0)]
-        df_sub[,lim_t := ifelse(lim_treat, 1, 0)]
         lim <- lim_ctrl | lim_treat # & df_sub$reweight_use > 0
       }
       lim <- !is.na(lim) & lim
@@ -650,10 +649,7 @@ lpdid_dt_prep <- function(df, window = c(NA, NA), y,
       }
     }
 
-    # Pre (Not sure about pmd here...)
-    # Before it was: if((j>1 & j<=pre_window) || (pmd & j<=pre_window)){
-        # The first just says only j between -pre_window and -1
-        # The second says only j between -pre_window and 0 when it is pmd...
+    # Pre
     else if((between(j,-pre_window,-1)) || (pmd & between(j,-pre_window,0))){
         # here the negative number lead looks back
       df_sub[,Dy:= shift(y, j, type='lead') - the_lag, by=unit_index, env=env_list]
@@ -666,23 +662,22 @@ lpdid_dt_prep <- function(df, window = c(NA, NA), y,
         if(composition_correction) lim <- !is.na(df_sub[,Dy]) & !is.na(df_sub[,treat_diff]) & !is.na(df_sub[,treat]) & (df_sub[,treat_diff] == 1 | shift(df_sub[,treat], post_window, type='lead') == 0) & (is.na(df_sub[,treat_date]) | (df_sub[,treat_date] < max(df_sub[,time_index]) - post_window))
       } else {
 
-        ## Non-Absorbing Limit
+        ## Non-Absorbing Limit -- base code seems bugged
         lim_ctrl <- TRUE; lim_treat <- TRUE
         for(k in -nonabsorbing_lag:j){
 
-          lim_ctrl <- lim_ctrl & shift(df_sub[,treat_diff],-k,type='lag') == 0
-          lim_treat <- lim_treat & if(k >= 0) shift(df_sub[,treat],k,type='lead') == 1 else shift(df_sub[,treat],-k,type='lag') == 0
+          lim_ctrl <- lim_ctrl & shift(df_sub[,treat_diff],k,type='lead') == 0
+          lim_treat <- lim_treat & if(k >= 0) shift(df_sub[,treat],k,type='lead') == 1 else shift(df_sub[,treat],k,type='lead') == 0
         }        
         lim <- lim_ctrl | lim_treat
       }
     }
     
-    # This is now broken -- it overwrites across the different j's so it only saves the output for j=10. It did not do this when I first wrote it, so I'm not sure what changed. I probably breathed funny because data.table is a jerk.
     lim <- lim & df_sub[,reweight_use] > 0
     
     df_sub[,laglead:=j]
     df_sub[,lim:=lim]
-    return(df_sub)
+    return(df_sub[(lim),])
     }
   )
   return(rbindlist(dfs,fill=TRUE))
@@ -695,8 +690,7 @@ lpdid_dt_reg <- function(df, window = c(NA, NA), y,
                   cluster = NULL,
                   controls = NULL,
                   controls_t = NULL,
-                  reweight = FALSE,
-                  omitted=-1){
+                  reweight = FALSE){
 
   lagz <- colnames(df)[grepl("y_diff_lag.", colnames(df))]
   if (length(lagz) == 0) lagz <- NULL
@@ -774,9 +768,9 @@ lpdid_dt_reg <- function(df, window = c(NA, NA), y,
                               nobs       = lpdid_nz,
                               check.names=FALSE,row.names=NULL)
       
-    # add row for omitted all zero
+    # add row for -1 all zero
     coeftable <- rbind(coeftable, 
-        data.frame(t=omitted, Estimate=0, "Std. Error"=0, "t value"=NA, "Pr(>|t|)"=NA, nobs=NA,check.names=FALSE,row.names=NULL))
+        data.frame(t=-1, Estimate=0, "Std. Error"=0, "t value"=NA, "Pr(>|t|)"=NA, nobs=NA,check.names=FALSE,row.names=NULL))
     coeftable <- coeftable[order(coeftable$t),]
     coeftable[,"Pr(>|t|)"] <- pnorm(abs(coeftable$`t value`), lower.tail = F)
     
@@ -816,8 +810,7 @@ lpdid_dt <- function(df, window = c(NA, NA), y,
                   pmd = FALSE, pmd_lag,
                   composition_correction = FALSE,
                   pooled = FALSE,
-                  nonabsorbing_lag = NULL,
-                  omitted=-1) {
-    dt<-lpdid_dt_prep(df, window = window, y = y,unit_index = unit_index, time_index = time_index,treat_status = treat_status,cluster = cluster,controls = controls,controls_t = controls_t,outcome_lags = outcome_lags,reweight = reweight,pmd = pmd, pmd_lag = pmd_lag,composition_correction = composition_correction,pooled = pooled,nonabsorbing_lag = nonabsorbing_lag,omitted=omitted)  
-    return(lpdid_dt_reg(dt, window = window, y = y,unit_index = unit_index, time_index = time_index,cluster = cluster,controls = controls,controls_t = controls_t,reweight = reweight,omitted=omitted))
+                  nonabsorbing_lag = NULL) {
+    dt<-lpdid_dt_prep(df, window = window, y = y,unit_index = unit_index, time_index = time_index,treat_status = treat_status,cluster = cluster,controls = controls,controls_t = controls_t,outcome_lags = outcome_lags,reweight = reweight,pmd = pmd, pmd_lag = pmd_lag,composition_correction = composition_correction,pooled = pooled,nonabsorbing_lag = nonabsorbing_lag)
+    return(lpdid_dt_reg(dt, window = window, y = y,unit_index = unit_index, time_index = time_index,cluster = cluster,controls = controls,controls_t = controls_t,reweight = reweight))
 }
